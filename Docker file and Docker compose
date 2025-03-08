@@ -1,0 +1,86 @@
+# Dockerfile
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Install security hardening packages
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    gnupg \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set non-root user
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
+# Copy requirements first for better caching
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY ./src /app/src
+COPY ./config /app/config
+
+# Set proper permissions
+RUN chown -R appuser:appuser /app
+USER appuser
+
+# Set security-focused environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=off \
+    PIP_DISABLE_PIP_VERSION_CHECK=on
+
+EXPOSE 8000
+
+CMD ["python", "-m", "src.core.app"]
+
+# docker-compose.yml
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./src:/app/src
+      - ./config:/app/config
+    environment:
+      - ENVIRONMENT=development
+      - LOG_LEVEL=info
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  security-db:
+    image: postgres:14-alpine
+    environment:
+      - POSTGRES_USER=securityapp
+      - POSTGRES_PASSWORD_FILE=/run/secrets/db_password
+      - POSTGRES_DB=security_findings
+    volumes:
+      - security-db-data:/var/lib/postgresql/data
+      - ./infra/docker/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql
+    secrets:
+      - db_password
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "securityapp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  security-db-data:
+
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt
